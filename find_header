@@ -2,19 +2,52 @@
 
 set -eu
 
-target_name="$1"
+CLANG="clang"
 
-headers=$(echo | gcc -E -Wp,-v - 2>&1 | grep "^ /" | xargs -i@ find @ -name '*.h')
+log::echo() {
+  echo "$@"
+}
 
-echo "info: found $(echo "$headers" | wc -l) header(s)."
+log::info() {
+  local prefix="info: "
+  local newline="\n" 
+  local maybe_option="${2:-}"
 
-for header in $headers; do
-  cp "$header" /tmp/.header.h
-  syms=$(clang -fsyntax-only -Xclang -ast-dump -nobuiltininc -nostdlibinc /tmp/.header.h 2>/dev/null || true)
-  syms=$(echo "$syms" | awk '/FunctionDecl/{ print $0 }' || true)
-  syms=$(echo "$syms" | awk '!/\//{ print $0 }' || true)
-  syms=$(echo "$syms" | grep -Po '(?<= )[a-zA-Z0-9_]+(?= '"'"')' || true)
-  if echo "$syms" | grep "^$target_name$" >/dev/null 2>&1; then
-    echo "info: found at '$header'."
+  if [[ $maybe_option == *">"* ]]; then
+    newline=""
   fi
-done
+  if [[ $maybe_option == *"-"* ]]; then
+    prefix=""
+  fi
+
+  printf "${prefix}$1${newline}"
+}
+
+log::warn() {
+  echo "warning: $@"
+}
+
+log::error() {
+  echo "error: $@"
+}
+
+cmd::find() {
+  local target_name="$1"
+  local std_headers=$(echo | $CLANG -E -Wp,-v - 2>&1 | grep "^ /" | xargs -i@ find @ -name '*.h')
+
+  log::info "found $(echo "$std_headers" | wc -l) header(s)."
+
+  for header in $std_headers; do
+    cp "$header" /tmp/.header.h
+    local syms=$($CLANG -fsyntax-only -Xclang -ast-dump -nobuiltininc -nostdlibinc /tmp/.header.h 2>/dev/null || true)
+    syms=$(echo "$syms" | awk '/FunctionDecl/{ print $0 }' || true)
+    syms=$(echo "$syms" | awk '!/invalid/{ print $0 }' || true)
+    syms=$(echo "$syms" | awk '!/implicit/{ print $0 }' || true)
+    syms=$(echo "$syms" | grep -Po '(?<= )[a-zA-Z0-9_]+(?= '"'"')' || true)
+    if echo "$syms" | grep "^$target_name$" >/dev/null 2>&1; then
+      log::info "found at '$header'."
+    fi
+  done
+}
+
+cmd::find "$1"
