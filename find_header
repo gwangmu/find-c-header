@@ -34,6 +34,34 @@ log::error() {
   echo "error: $@"
 }
 
+#--
+
+help::top() {
+  log::echo "usage: $0 <command>"
+  log::echo ""
+  log::echo "Available commands:"
+  log::echo "  cache       Update stale cache entry."
+  log::echo "  find        Find a header for a given function declaration."
+}
+
+help::cache() {
+  log::echo "usage: $0 cache [<option> ...]"
+  log::echo ""
+  log::echo "Options:"
+  log::echo "  -f, --force-update     Force every cache entry to update."
+}
+
+help::find() {
+  log::echo "usage: $0 find <func_name> [<option> ...]"
+  log::echo ""
+  log::echo "Arguments:"
+  log::echo "  <func_name>      Function name to find the header for."
+  log::echo ""
+  log::echo "Options:"
+  log::echo "  -a, --all-depth      Search all depths. (default: stop at the lowest found depth)"
+  log::echo "  -p, --print-depth    Print the current depth."
+}
+
 util::parse_arguments() {
   local -rn _pa_opts=$1
   local -rn _pa_poss=$2
@@ -89,6 +117,15 @@ util::parse_arguments() {
 cmd::cache() {
   log::info "updating cache..."
 
+  local opts=("-f|--force-update")
+  local poss=()
+  local etcs_out=()
+  util::parse_arguments opts poss etcs_out $@
+
+  if [[ -v opt_forceupdate ]]; then
+    cd "$CACHE_ROOT" >/dev/null 2>&1 && rm -rf *
+  fi
+
   mkdir -p "$CACHE_ROOT"
 
   local std_headers=$(echo | $CLANG -E -Wp,-v - 2>&1 | grep "^ /" | xargs -i@ find @ -name '*.h')
@@ -96,16 +133,38 @@ cmd::cache() {
 
   local n_updated=0
   for header in $std_headers; do
-    if [[ ! -f "$CACHE_ROOT/$header" ]] || (( $(stat -c %Y "$header") > $(stat -c %Y "$CACHE_ROOT/$header") )); then
-      cp "$header" /tmp/.header.h
-      local syms=$($CLANG -fsyntax-only -Xclang -ast-dump -nobuiltininc -nostdlibinc /tmp/.header.h 2>/dev/null || true)
+    #log::info "updating: [                    " ">"
+    if [[ ! -f "$CACHE_ROOT/$header" ]] || (( $(stat -c %Y "$header") > $(stat -c %Y "$CACHE_ROOT/$header.direct") )); then
+      local syms=""
+      mkdir -p "$(dirname "$CACHE_ROOT/$header")"
+
+      syms=$($CLANG -fsyntax-only -Xclang -ast-dump "$header" 2>/dev/null || true)
       syms=$(echo "$syms" | awk '/FunctionDecl/{ print $0 }' || true)
-      syms=$(echo "$syms" | awk '!/invalid/{ print $0 }' || true)
       syms=$(echo "$syms" | awk '!/implicit/{ print $0 }' || true)
       syms=$(echo "$syms" | grep -Po '(?<= )[a-zA-Z0-9_]+(?= '"'"')' || true)
-      mkdir -p "$(dirname "$CACHE_ROOT/$header")"
-      echo "$syms" > "$CACHE_ROOT/$header"
+      echo "$syms" > "$CACHE_ROOT/$header.indirect"
+
+      cat "$header" | sed '/^ *\*.*$/d' > "/tmp/.header.stripped.h"
+      grep -Po "[a-zA-Z0-9_]+[ \*]+[a-zA-Z0-9_]+ *\(" "/tmp/.header.stripped.h" | sed 's/^.*[ \*]\+\([a-zA-Z0-9_]\+\).*$/\1/g' > /tmp/.tokens
+      sort "$CACHE_ROOT/$header.indirect" /tmp/.tokens | uniq -d > "$CACHE_ROOT/$header.direct"
+
+      touch --reference "$header" "$CACHE_ROOT/$header.direct"
+      touch --reference "$header" "$CACHE_ROOT/$header.indirect"
+
       (( n_updated = n_updated + 1 ))
+    fi
+    #log::info "\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b" "->"
+    #(( cells = n_updated * 100 / $(echo "$std_headers" | wc -l) / 5 ))
+    #(( n_cells = 20 - cells ))
+    #for i in {1..$cells}; do
+    #  log::info "=" "->"
+    #done
+    #for i in {1..$n_cells}; do
+    #  log::info " " "->"
+    #done
+    #log::info "]" "->"
+    if (( n_updated % 100 == 0 )); then
+      log::info "updated $n_updated headers. still going..."
     fi
   done
 
@@ -137,14 +196,27 @@ cmd::find() {
       break
     fi
     
-    headers=$(find "$CACHE_ROOT" -mindepth $n_depth -maxdepth $n_depth -type f)
-
-    for header in $headers; do
+    dir_headers=$(find "$CACHE_ROOT" -mindepth $n_depth -maxdepth $n_depth -type f -name '*.direct')
+    for header in $dir_headers; do
       if grep "^$target_name$" "$header" >/dev/null 2>&1; then
-        log::info "symbol '$target_name' found at '${header#$CACHE_ROOT*}'."
+        local header_path=${header#$CACHE_ROOT*}
+        header_path=${header_path%*.direct}
+        log::info "symbol '$target_name' found at '$header_path'."
         local found_at_current_depth=1
       fi
     done
+
+    if [[ -v opt_alldepth ]] || [[ ! -v found_at_current_depth ]]; then
+      indir_headers=$(find "$CACHE_ROOT" -mindepth $n_depth -maxdepth $n_depth -type f -name '*.indirect')
+      for header in $indir_headers; do
+        if grep "^$target_name$" "$header" >/dev/null 2>&1; then
+          local header_path=${header#$CACHE_ROOT*}
+          header_path=${header_path%*.indirect}
+          log::info "symbol '$target_name' found at '$header_path'. (indirect)"
+          local found_at_current_depth=1
+        fi
+      done
+    fi
 
     if [[ ! -v opt_alldepth ]] &&[[ -v found_at_current_depth ]]; then
       break
@@ -166,6 +238,9 @@ main() {
     "find")
       shift
       cmd::find $@
+      ;;
+    *)
+      help::top
       ;;
   esac
 }
