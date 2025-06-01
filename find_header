@@ -2,6 +2,9 @@
 
 set -eu
 
+SCRIPT_ROOT="$(dirname $(realpath ${BASH_SOURCE[0]}))"
+CACHE_ROOT="$SCRIPT_ROOT/.cache"
+
 CLANG="clang"
 
 log::echo() {
@@ -31,23 +34,140 @@ log::error() {
   echo "error: $@"
 }
 
-cmd::find() {
-  local target_name="$1"
-  local std_headers=$(echo | $CLANG -E -Wp,-v - 2>&1 | grep "^ /" | xargs -i@ find @ -name '*.h')
+util::parse_arguments() {
+  local -rn _pa_opts=$1
+  local -rn _pa_poss=$2
+  local -n _pa_etcs_out=$3
+  shift 3
 
+  local n_pos=0
+  while [[ ! -z "$@" ]]; do
+    if [[ "$1" == "--" ]]; then
+      local etc_began=1
+      shift
+      continue
+    fi
+
+    if [[ ! -v etc_began ]]; then
+      unset opt_found 
+      for opt in "${_pa_opts[@]}"; do
+        IFS="|" read -r opt_short opt_long opt_val <<< "$opt"
+        if [[ $1 == $opt_short ]] || [[ $1 == $opt_long ]]; then
+          local opt_long_conv=${opt_long#--*}
+          opt_long_conv=${opt_long_conv//-/}
+          if [[ "$opt_val" != "*" ]]; then
+            eval "export opt_$opt_long_conv=\"1\""
+          else
+            shift
+            eval "export opt_$opt_long_conv=\"\$1\""
+          fi
+          local opt_found=1
+          break
+        fi
+      done
+
+      if [[ ! -v opt_found ]]; then
+        if (( n_pos >= ${#_pa_poss[@]} )); then
+          echo "error: too many positional arguments."
+          exit 1
+        fi
+        
+        local -n pos_arg=${_pa_poss[$n_pos]}
+        pos_arg="$1"
+        (( n_pos = n_pos + 1 ))
+      fi
+    else
+      _pa_etcs_out+=("$1")  
+    fi
+
+    shift
+  done 
+}
+
+#--
+
+cmd::cache() {
+  log::info "updating cache..."
+
+  mkdir -p "$CACHE_ROOT"
+
+  local std_headers=$(echo | $CLANG -E -Wp,-v - 2>&1 | grep "^ /" | xargs -i@ find @ -name '*.h')
   log::info "found $(echo "$std_headers" | wc -l) header(s)."
 
+  local n_updated=0
   for header in $std_headers; do
-    cp "$header" /tmp/.header.h
-    local syms=$($CLANG -fsyntax-only -Xclang -ast-dump -nobuiltininc -nostdlibinc /tmp/.header.h 2>/dev/null || true)
-    syms=$(echo "$syms" | awk '/FunctionDecl/{ print $0 }' || true)
-    syms=$(echo "$syms" | awk '!/invalid/{ print $0 }' || true)
-    syms=$(echo "$syms" | awk '!/implicit/{ print $0 }' || true)
-    syms=$(echo "$syms" | grep -Po '(?<= )[a-zA-Z0-9_]+(?= '"'"')' || true)
-    if echo "$syms" | grep "^$target_name$" >/dev/null 2>&1; then
-      log::info "found at '$header'."
+    if [[ ! -f "$CACHE_ROOT/$header" ]] || (( $(stat -c %Y "$header") > $(stat -c %Y "$CACHE_ROOT/$header") )); then
+      cp "$header" /tmp/.header.h
+      local syms=$($CLANG -fsyntax-only -Xclang -ast-dump -nobuiltininc -nostdlibinc /tmp/.header.h 2>/dev/null || true)
+      syms=$(echo "$syms" | awk '/FunctionDecl/{ print $0 }' || true)
+      syms=$(echo "$syms" | awk '!/invalid/{ print $0 }' || true)
+      syms=$(echo "$syms" | awk '!/implicit/{ print $0 }' || true)
+      syms=$(echo "$syms" | grep -Po '(?<= )[a-zA-Z0-9_]+(?= '"'"')' || true)
+      mkdir -p "$(dirname "$CACHE_ROOT/$header")"
+      echo "$syms" > "$CACHE_ROOT/$header"
+      (( n_updated = n_updated + 1 ))
     fi
+  done
+
+  log::info "total $n_updated header(s) updated."
+}
+
+cmd::find() {
+  local target_name=""
+
+  local opts=("-a|--all-depth" "-d|--print-depth")
+  local poss=(target_name)
+  local etcs_out=()
+  util::parse_arguments opts poss etcs_out $@
+
+  if [[ ! -d "$CACHE_ROOT" ]]; then
+    cmd::cache
+  fi
+
+  local n_depth=1
+  while true; do
+    unset found_at_current_depth
+
+    if [[ -v opt_printdepth ]]; then
+      log::info "searching depth $n_depth..."
+    fi
+
+    depth_dirs=$(find "$CACHE_ROOT" -mindepth $n_depth -maxdepth $n_depth)
+    if [[ -z $depth_dirs ]]; then
+      break
+    fi
+    
+    headers=$(find "$CACHE_ROOT" -mindepth $n_depth -maxdepth $n_depth -type f)
+
+    for header in $headers; do
+      if grep "^$target_name$" "$header" >/dev/null 2>&1; then
+        log::info "symbol '$target_name' found at '${header#$CACHE_ROOT*}'."
+        local found_at_current_depth=1
+      fi
+    done
+
+    if [[ ! -v opt_alldepth ]] &&[[ -v found_at_current_depth ]]; then
+      break
+    fi
+
+    (( n_depth = n_depth + 1 ))
   done
 }
 
-cmd::find "$1"
+#--
+
+main() {
+  cmd_major="${1:-}"
+  case $cmd_major in
+    "cache")
+      shift
+      cmd::cache $@
+      ;;
+    "find")
+      shift
+      cmd::find $@
+      ;;
+  esac
+}
+
+main $@
