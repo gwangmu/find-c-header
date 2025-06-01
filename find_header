@@ -1,0 +1,20 @@
+#!/bin/bash
+
+set -eu
+
+target_name="$1"
+
+headers=$(echo | gcc -E -Wp,-v - 2>&1 | grep "^ /" | xargs -i@ find @ -name '*.h')
+
+echo "info: found $(echo "$headers" | wc -l) header(s)."
+
+for header in $headers; do
+  cp "$header" /tmp/.header.h
+  syms=$(clang -fsyntax-only -Xclang -ast-dump -nobuiltininc -nostdlibinc /tmp/.header.h 2>/dev/null || true)
+  syms=$(echo "$syms" | awk '/FunctionDecl/{ print $0 }' || true)
+  syms=$(echo "$syms" | awk '!/\//{ print $0 }' || true)
+  syms=$(echo "$syms" | grep -Po '(?<= )[a-zA-Z0-9_]+(?= '"'"')' || true)
+  if echo "$syms" | grep "^$target_name$" >/dev/null 2>&1; then
+    echo "info: found at '$header'."
+  fi
+done
