@@ -183,6 +183,9 @@ cmd::find() {
     cmd::cache
   fi
 
+  local base_dirs=()
+  readarray -td' ' base_dirs < <(echo | $CLANG -E -Wp,-v - 2>&1 | grep "^ /" | xargs | tr -d '\n')
+
   local n_depth=1
   while true; do
     unset found_at_current_depth
@@ -191,12 +194,22 @@ cmd::find() {
       log::info "searching depth $n_depth..."
     fi
 
-    depth_dirs=$(find "$CACHE_ROOT" -mindepth $n_depth -maxdepth $n_depth)
-    if [[ -z $depth_dirs ]]; then
+    header_dirs=()
+    for base_dir in "${base_dirs[@]}"; do
+      readarray -td' ' new_header_dirs < <(find "$base_dir" -mindepth $n_depth -maxdepth $n_depth -type d 2>/dev/null | xargs | tr -d '\n')
+      header_dirs+=${new_header_dirs[@]}
+    done
+
+    if [[ -z "$header_dirs" ]]; then
       break
     fi
+
+    dir_headers=()
+    for base_dir in "${base_dirs[@]}"; do
+      readarray -td' ' new_dir_headers < <(find "$CACHE_ROOT$base_dir" -mindepth $n_depth -maxdepth $n_depth -type f -name '*.direct' 2>/dev/null | xargs | tr -d '\n')
+      dir_headers+=${new_dir_headers[@]}
+    done
     
-    dir_headers=$(find "$CACHE_ROOT" -mindepth $n_depth -maxdepth $n_depth -type f -name '*.direct')
     for header in $dir_headers; do
       if grep "^$target_name$" "$header" >/dev/null 2>&1; then
         local header_path=${header#$CACHE_ROOT*}
@@ -207,7 +220,12 @@ cmd::find() {
     done
 
     if [[ -v opt_alldepth ]] || [[ ! -v found_at_current_depth ]]; then
-      indir_headers=$(find "$CACHE_ROOT" -mindepth $n_depth -maxdepth $n_depth -type f -name '*.indirect')
+      indir_headers=()
+      for base_dir in "${base_dirs[@]}"; do
+        readarray -td' ' new_indir_headers < <(find "$CACHE_ROOT$base_dir" -mindepth $n_depth -maxdepth $n_depth -type f -name '*.indirect' 2>/dev/null | xargs | tr -d '\n')
+        indir_headers+=${new_indir_headers[@]}
+      done
+
       for header in $indir_headers; do
         if grep "^$target_name$" "$header" >/dev/null 2>&1; then
           local header_path=${header#$CACHE_ROOT*}
