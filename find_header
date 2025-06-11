@@ -134,7 +134,7 @@ cmd::cache() {
   local n_updated=0
   for header in $std_headers; do
     #log::info "updating: [                    " ">"
-    if [[ ! -f "$CACHE_ROOT/$header" ]] || (( $(stat -c %Y "$header") > $(stat -c %Y "$CACHE_ROOT/$header.direct") )); then
+    if [[ ! -f "$CACHE_ROOT/$header.direct" ]] || [ $(date +%s -r "$header") -gt $(date +%s -r "$CACHE_ROOT/$header.direct") ]; then
       local syms=""
       mkdir -p "$(dirname "$CACHE_ROOT/$header")"
 
@@ -152,6 +152,10 @@ cmd::cache() {
       touch --reference "$header" "$CACHE_ROOT/$header.indirect"
 
       (( n_updated = n_updated + 1 ))
+
+      if (( n_updated % 100 == 0 )); then
+        log::info "updated $n_updated headers. still going..."
+      fi
     fi
     #log::info "\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b" "->"
     #(( cells = n_updated * 100 / $(echo "$std_headers" | wc -l) / 5 ))
@@ -163,9 +167,6 @@ cmd::cache() {
     #  log::info " " "->"
     #done
     #log::info "]" "->"
-    if (( n_updated % 100 == 0 )); then
-      log::info "updated $n_updated headers. still going..."
-    fi
   done
 
   log::info "total $n_updated header(s) updated."
