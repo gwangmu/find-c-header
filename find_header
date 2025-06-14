@@ -175,7 +175,7 @@ cmd::cache() {
 cmd::find() {
   local target_name=""
 
-  local opts=("-a|--all-depth" "-d|--print-depth")
+  local opts=("-a|--all-depth" "-d|--print-depth" "-i|--include")
   local poss=(target_name)
   local etcs_out=()
   util::parse_arguments opts poss etcs_out $@
@@ -215,7 +215,12 @@ cmd::find() {
       if grep "^$target_name$" "$header" >/dev/null 2>&1; then
         local header_path=${header#$CACHE_ROOT*}
         header_path=${header_path%*.direct}
-        log::info "symbol '$target_name' found at '$header_path'."
+        if [[ -v opt_include ]]; then
+          local include_path=$(grep -Po "(?<=/)([^/]*/){$(( n_depth - 1 ))}[^/]*$" <<<"$header_path")
+          printf "%-24s  %s\n" "#include <$include_path>" "# from '$header_path'"
+        else
+          log::info "symbol '$target_name' found at '$header_path'."
+        fi
         local found_at_current_depth=1
       fi
     done
